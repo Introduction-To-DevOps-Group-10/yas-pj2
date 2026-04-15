@@ -45,6 +45,7 @@ pipeline {
                         script: """
                             gitleaks detect \
                               --source=. \
+                              --config=gitleaks.toml \
                               --log-opts="${scanRange}" \
                               --report-format=json \
                               --report-path=gitleaks-report.json \

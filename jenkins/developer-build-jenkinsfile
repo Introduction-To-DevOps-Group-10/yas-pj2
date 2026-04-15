@@ -1,0 +1,364 @@
+// ================================================================
+// developer_build Jenkinsfile
+// Mục 4  : Developer deploy thử code của mình bằng tay
+// Mục 5  : Xóa developer namespace (file riêng: developer-delete-jenkinsfile)
+//
+// Input parameters:
+//   SERVICE_NAME : tên service developer đang phát triển (VD: tax, cart)
+//   BRANCH_NAME  : tên branch chứa code cần test (VD: dev_tax_service)
+//
+// Logic:
+//   - Service được chỉ định → image tag = <branch>-<commit_sha>
+//   - Các service còn lại      → image tag = main  (stable)
+//   - Deploy vào namespace: developer (NodePort để dev truy cập)
+// ================================================================
+pipeline {
+    agent any
+
+    parameters {
+        string(
+            name:    'SERVICE_NAME',
+            defaultValue: 'tax',
+            description: 'Tên service cần deploy thử (VD: tax, cart, product)'
+        )
+        string(
+            name:    'BRANCH_NAME',
+            defaultValue: 'main',
+            description: 'Branch chứa code cần test (VD: dev_tax_service)'
+        )
+        string(
+            name:    'DOCKER_HUB_USER',
+            defaultValue: 'nashtechgarage',
+            description: 'Docker Hub username'
+        )
+    }
+
+    environment {
+        NAMESPACE   = 'developer'
+        K8S_CLUSTER = 'https://<K8S-MASTER-IP>:6443'
+    }
+
+    stages {
+
+        // ────────────────────────────────────────────────────────
+        // Bước 1: Validate SERVICE_NAME
+        // ────────────────────────────────────────────────────────
+        stage('Validate parameters') {
+            steps {
+                script {
+                    def validServices = [
+                        'cart','customer','inventory','location','media',
+                        'order','payment','payment-paypal','product',
+                        'promotion','rating','recommendation','sampledata',
+                        'search','tax','webhook',
+                        'storefront-ui','storefront-bff',
+                        'backoffice-ui','backoffice-bff',
+                    ]
+                    if (!validServices.contains(params.SERVICE_NAME)) {
+                        error("❌ SERVICE_NAME '${params.SERVICE_NAME}' không hợp lệ. Chọn: ${validServices.join(', ')}")
+                    }
+                    echo "─── SERVICE_NAME:  ${params.SERVICE_NAME}"
+                    echo "─── BRANCH_NAME:  ${params.BRANCH_NAME}"
+                    echo "─── Docker Hub:   ${params.DOCKER_HUB_USER}"
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 2: Checkout branch được chỉ định
+        // ────────────────────────────────────────────────────────
+        stage('Checkout target branch') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "*/${params.BRANCH_NAME}"]],
+                    extensions: [
+                        [$class: 'WipeWorkspace'],
+                        [$class: 'CloneOption', depth: 1, noTags: true]
+                    ],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git'
+                    ]]
+                ])
+                echo "✅ Checked out branch: ${params.BRANCH_NAME}"
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 3: Get commit SHA và build image tag
+        // ────────────────────────────────────────────────────────
+        stage('Get commit SHA') {
+            steps {
+                script {
+                    env.BUILD_COMMIT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.IMAGE_TAG = "${params.BRANCH_NAME}-${env.BUILD_COMMIT}"
+                    echo "📦 Image tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 4: Build & push TARGET SERVICE image với tag = branch-sha
+        // ────────────────────────────────────────────────────────
+        stage('Build & Push target service image') {
+            steps {
+                script {
+                    def svc       = params.SERVICE_NAME
+                    def imageRepo = "yas-${svc}"
+                    if (svc == 'storefront-ui') { imageRepo = 'yas-storefront' }
+                    if (svc == 'backoffice-ui') { imageRepo = 'yas-backoffice' }
+
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo " Building: ${params.DOCKER_HUB_USER}/${imageRepo}:${env.IMAGE_TAG}"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+                    sh """
+                        docker build -t ${params.DOCKER_HUB_USER}/${imageRepo}:${env.IMAGE_TAG} \
+                                     ${svc}/
+                        docker push ${params.DOCKER_HUB_USER}/${imageRepo}:${env.IMAGE_TAG}
+                    """
+                    echo "✅ Target service image pushed"
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 5: Build & push các service còn lại (tag = main/latest)
+        // Chỉ build nếu chưa có image main trên Docker Hub
+        // ────────────────────────────────────────────────────────
+        stage('Ensure all other service images exist (main/latest)') {
+            steps {
+                script {
+                    def allServices = [
+                        'cart','customer','inventory','location','media',
+                        'order','payment','payment-paypal','product',
+                        'promotion','rating','recommendation','sampledata',
+                        'search','tax','webhook',
+                        'storefront-ui','storefront-bff',
+                        'backoffice-ui','backoffice-bff',
+                    ]
+                    def targetSvc = params.SERVICE_NAME
+
+                    allServices.each { svc ->
+                        if (svc == targetSvc) {
+                            echo "  ⏭  Skipping ${svc} (already built above)"
+                            return
+                        }
+                        def imageRepo = "yas-${svc}"
+                        if (svc == 'storefront-ui') { imageRepo = 'yas-storefront' }
+                        if (svc == 'backoffice-ui') { imageRepo = 'yas-backoffice' }
+
+                        echo "  Building ${imageRepo}:main"
+                        sh """
+                            docker build -t ${params.DOCKER_HUB_USER}/${imageRepo}:main ${svc}/ 2>/dev/null || \
+                            docker pull ${params.DOCKER_HUB_USER}/${imageRepo}:main 2>/dev/null || true
+                            docker push ${params.DOCKER_HUB_USER}/${imageRepo}:main || true
+                        """
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 6: Patch Helm values — ghcr.io → docker.io
+        // tag của SERVICE_NAME = branch-sha, các service còn lại = main
+        // ────────────────────────────────────────────────────────
+        stage('Patch Helm values') {
+            steps {
+                script {
+                    def allServices = [
+                        'cart','customer','inventory','location','media',
+                        'order','payment','payment-paypal','product',
+                        'promotion','rating','recommendation','sampledata',
+                        'search','tax','webhook',
+                        'storefront-ui','storefront-bff',
+                        'backoffice-ui','backoffice-bff',
+                    ]
+                    def targetSvc = params.SERVICE_NAME
+                    def dockerHubUser = params.DOCKER_HUB_USER
+
+                    allServices.each { svc ->
+                        def valuesFile = "k8s/charts/${svc}/values.yaml"
+                        def imageRepo  = "yas-${svc}"
+                        if (svc == 'storefront-ui') { imageRepo = 'yas-storefront' }
+                        if (svc == 'backoffice-ui') { imageRepo = 'yas-backoffice' }
+
+                        // Service được chỉ định: tag = branch-sha
+                        // Các service khác: tag = main
+                        def imageTag = (svc == targetSvc) ? env.IMAGE_TAG : 'main'
+
+                        sh """
+                            sed -i 's|ghcr.io/nashtech-garage/yas-${svc}|docker.io/${dockerHubUser}/${imageRepo}|g' \
+                                ${valuesFile}
+
+                            if grep -q "tag: latest" ${valuesFile}; then
+                                sed -i 's|tag: latest|tag: ${imageTag}|g' ${valuesFile}
+                            elif grep -q "tag: ''" ${valuesFile}; then
+                                sed -i "s|tag: ''|tag: '${imageTag}'|g" ${valuesFile}
+                            fi
+                        """
+                        echo "  ✅ ${svc} → tag: ${imageTag}"
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 7: Create developer namespace
+        // ────────────────────────────────────────────────────────
+        stage('Create developer namespace') {
+            steps {
+                sh '''
+                    kubectl get namespace ${NAMESPACE} \
+                      || kubectl create namespace ${NAMESPACE}
+                    echo "✅ Namespace ${NAMESPACE} ready"
+                '''
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 8: Helm upgrade developer namespace
+        // ────────────────────────────────────────────────────────
+        stage('Deploy all services to developer namespace') {
+            steps {
+                script {
+                    def charts = [
+                        [name: 'yas-configuration', path: 'k8s/charts/yas-configuration'],
+                        [name: 'cart',          path: 'k8s/charts/cart'],
+                        [name: 'customer',       path: 'k8s/charts/customer'],
+                        [name: 'inventory',       path: 'k8s/charts/inventory'],
+                        [name: 'location',        path: 'k8s/charts/location'],
+                        [name: 'media',           path: 'k8s/charts/media'],
+                        [name: 'order',           path: 'k8s/charts/order'],
+                        [name: 'payment',          path: 'k8s/charts/payment'],
+                        [name: 'payment-paypal',  path: 'k8s/charts/payment-paypal'],
+                        [name: 'product',         path: 'k8s/charts/product'],
+                        [name: 'promotion',       path: 'k8s/charts/promotion'],
+                        [name: 'rating',           path: 'k8s/charts/rating'],
+                        [name: 'recommendation',  path: 'k8s/charts/recommendation'],
+                        [name: 'sampledata',      path: 'k8s/charts/sampledata'],
+                        [name: 'search',           path: 'k8s/charts/search'],
+                        [name: 'tax',              path: 'k8s/charts/tax'],
+                        [name: 'webhook',           path: 'k8s/charts/webhook'],
+                        [name: 'storefront-bff',   path: 'k8s/charts/storefront-bff'],
+                        [name: 'backoffice-bff',    path: 'k8s/charts/backoffice-bff'],
+                        [name: 'storefront-ui',    path: 'k8s/charts/storefront-ui'],
+                        [name: 'backoffice-ui',     path: 'k8s/charts/backoffice-ui'],
+                    ]
+
+                    charts.each { chart ->
+                        echo "─── Deploying ${chart.name} ───"
+                        sh """
+                            helm upgrade --install ${chart.name} ${chart.path} \
+                              --namespace ${NAMESPACE} \
+                              --create-namespace \
+                              --wait --timeout 5m \
+                              --atomic \
+                              --kube-server ${K8S_CLUSTER}
+                        """
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 9: Expose via NodePort
+        // ────────────────────────────────────────────────────────
+        stage('Expose services via NodePort') {
+            steps {
+                script {
+                    def nodePorts = [
+                        [svc: 'storefront-bff', npName: 'storefront-bff-np', nodePort: '30001'],
+                        [svc: 'backoffice-bff',  npName: 'backoffice-bff-np',  nodePort: '30002'],
+                    ]
+                    nodePorts.each { np ->
+                        sh """
+                            kubectl expose deployment ${np.svc} \
+                              -n ${NAMESPACE} --type=NodePort \
+                              --port=80 --target-port=80 \
+                              --name=${np.npName} \
+                              --overwrite=True 2>/dev/null || true
+                            kubectl patch svc ${np.npName} -n ${NAMESPACE} \
+                              -p '{"spec":{"type":"NodePort","ports":[{"nodePort":${np.nodePort},"port":80,"targetPort":80}]}}' \
+                              2>/dev/null || true
+                        """
+                    }
+
+                    // Expose service developer đang test
+                    sh """
+                        kubectl expose deployment ${params.SERVICE_NAME} \
+                          -n ${NAMESPACE} --type=NodePort \
+                          --port=80 --target-port=80 \
+                          --name=${params.SERVICE_NAME}-np \
+                          --overwrite=True 2>/dev/null || true
+                    """
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Bước 10: Get Worker Node IP + Print access URLs
+        // ────────────────────────────────────────────────────────
+        stage('Print access URLs') {
+            steps {
+                script {
+                    def workerIP = sh(
+                        script: """
+                            kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' \
+                              2>/dev/null \
+                            || kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    def targetSvc = params.SERVICE_NAME
+                    def targetNP  = "${targetSvc}-np"
+
+                    def targetNPNodePort = sh(
+                        script: "kubectl get svc ${targetSvc}-np -n developer -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo '3xxxx'",
+                        returnStdout: true
+                    ).trim()
+
+                    echo """
+╔══════════════════════════════════════════════════════════════════════╗
+║              ✅ DEVELOPER DEPLOYMENT SUCCESSFUL                       ║
+╠══════════════════════════════════════════════════════════════════════╣
+║                                                                       ║
+║  Service bạn deploy:    ${targetSvc.padRight(40)}    ║
+║  Branch:                ${params.BRANCH_NAME.padRight(40)}    ║
+║  Image tag:             ${env.IMAGE_TAG.padRight(40)}    ║
+║  Namespace:             developer                               ║
+║                                                                       ║
+║  ─────────────────── ACCESS URLs ─────────────────────              ║
+║                                                                       ║
+║  Storefront BFF:  http://${workerIP}:30001                          ║
+║  Backoffice BFF:  http://${workerIP}:30002                          ║
+║  ${targetSvc} BFF:  http://${workerIP}:${targetNPNodePort.padLeft(5)}                          ║
+║                                                                       ║
+║  ─── THÊM VÀO FILE hosts (Admin) ───                                 ║
+║                                                                       ║
+║  Linux/macOS:  sudo vi /etc/hosts                                    ║
+║  Windows:      notepad C:\\\\Windows\\\\System32\\\\drivers\\\\etc\\\\hosts           ║
+║                                                                       ║
+║    ${workerIP}  storefront.yas.local.com                         ║
+║    ${workerIP}  backoffice.yas.local.com                          ║
+║    ${workerIP}  ${targetSvc}.yas.local.com}                          ║
+║                                                                       ║
+║  ─── Sau khi xong, chạy job: developer_delete ─────────────────     ║
+║                                                                       ║
+╚══════════════════════════════════════════════════════════════════════╝
+"""
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

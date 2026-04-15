@@ -1,0 +1,23 @@
+# ============================================================
+# Istio Sidecar Injection Label
+# Chạy lệnh sau để bật Istio sidecar cho từng namespace:
+#
+#   kubectl label namespace dev       istio-injection=enabled --overwrite
+#   kubectl label namespace staging   istio-injection=enabled --overwrite
+#   kubectl label namespace developer istio-injection=enabled --overwrite
+#
+# Namespace đã được label trong k8s/argocd/namespaces.yaml.
+# File này dùng làm tài liệu và kiểm tra trạng thái.
+# ============================================================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio-injection-status
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/name: yas
+data:
+  # Trạng thái label hiện tại (cập nhật sau khi apply namespaces.yaml)
+  dev-namespaces: "dev staging developer"
+  istio-version: "1.22+"

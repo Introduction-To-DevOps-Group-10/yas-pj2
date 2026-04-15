@@ -1,0 +1,27 @@
+# ============================================================
+# ArgoCD Namespaces
+# Ngầm định dev và staging cho CI/CD; developer namespace
+# được tạo bởi developer_build job (không qua ArgoCD).
+# ============================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+  labels:
+    # Bật Istio sidecar injection tự động cho mọi pod trong namespace
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: developer
+  labels:
+    istio-injection: enabled

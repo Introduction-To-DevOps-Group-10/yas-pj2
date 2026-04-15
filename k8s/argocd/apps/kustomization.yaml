@@ -1,0 +1,11 @@
+# ============================================================
+# ArgoCD Apps Kustomization
+# ArgoCD root app (root-app.yaml) theo dõi thư mục này.
+# Mỗi subdirectory = một child Application.
+# ============================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - dev/all-services.yaml
+  - staging/all-services.yaml

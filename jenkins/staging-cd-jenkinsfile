@@ -1,0 +1,253 @@
+// ================================================================
+// staging_cd Jenkinsfile
+// ────────────────────────────────────────────────────────────────
+// GitOps PULL MODEL — CHỈ commit Git, KHÔNG helm/kubectl
+//
+// Trigger  : Git tag dạng v*.*.* được push lên origin
+// VD       : git tag v1.2.3 && git push origin v1.2.3
+//
+// Luồng hoàn chỉnh:
+//   1. Developer tạo git tag v1.2.3 và push
+//   2. staging_cd trigger tự động (GitHub webhook)
+//   3. Extract git tag v1.2.3
+//   4. Build & push ALL images với tag = v1.2.3 lên Docker Hub
+//   5. Patch values.yaml: tag = v1.2.3, ghcr.io → docker.io
+//   6. Commit & push values.yaml (CÓ [skip ci])
+//      → ArgoCD thấy tag v1.2.3 match "v*.*.*" → sync staging ✅
+//      → staging_cd KHÔNG tự trigger lại (vì [skip ci])
+//
+// Mô hình: ArgoCD là "Single Source of Truth" cho staging.
+// Jenkins chỉ cập nhật Git → ArgoCD tự động sync.
+// ================================================================
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB_USER = 'nashtechgarage'
+        GIT_REPO        = 'https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git'
+        GIT_BRANCH      = 'main'
+        GIT_CREDENTIALS = 'github-read-write'
+    }
+
+    stages {
+
+        // ────────────────────────────────────────────────────────
+        // Stage 1: Extract Git Tag
+        // ────────────────────────────────────────────────────────
+        stage('Extract Git Tag') {
+            steps {
+                script {
+                    // GIT_TAG_NAME được populate tự động khi trigger by tag push
+                    def tag = env.GIT_TAG_NAME ?: env.TAG_NAME ?: ''
+                    if (!tag) {
+                        tag = sh(
+                            script: "git describe --tags --abbrev=0",
+                            returnStdout: true
+                        ).trim()
+                    }
+                    env.RELEASE_TAG = tag   // VD: v1.2.3
+                    echo "🔖 Release tag: ${tag}"
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 2: Checkout
+        // ────────────────────────────────────────────────────────
+        stage('Checkout') {
+            steps {
+                checkout scm
+                echo "✅ Checked out at tag: ${env.RELEASE_TAG}"
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 3: Verify tag format
+        // ────────────────────────────────────────────────────────
+        stage('Verify tag format') {
+            steps {
+                script {
+                    def tag = env.RELEASE_TAG
+                    if (!tag.matches(/^v\d+\.\d+\.\d+.*$/)) {
+                        error("❌ Invalid tag: '${tag}'. Expected format: v*.*.*  VD: v1.2.3")
+                    }
+                    echo "✅ Tag format valid: ${tag}"
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 4: Build & Push Docker Images (Release Tag)
+        // ────────────────────────────────────────────────────────
+        stage('Build & Push Docker Images') {
+            steps {
+                script {
+                    // Lấy commit SHA để build (cần vì đang ở detached HEAD state)
+                    env.COMMIT_SHORT_SHA = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    def javaServices = [
+                        'cart','customer','inventory','location','media',
+                        'order','payment','payment-paypal','product',
+                        'promotion','rating','recommendation','sampledata',
+                        'search','tax','webhook',
+                        'storefront-bff','backoffice-bff'
+                    ]
+                    def nodeServices = ['storefront', 'backoffice']
+
+                    (javaServices + nodeServices).each { svc ->
+                        def imageRepo = "yas-${svc}"
+                        def tag = env.RELEASE_TAG    // v1.2.3
+
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        echo " Building: ${DOCKER_HUB_USER}/${imageRepo}:${tag}"
+                        echo " Commit SHA: ${env.COMMIT_SHORT_SHA}"
+                        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+                        sh """
+                            docker build -t ${DOCKER_HUB_USER}/${imageRepo}:${tag} ${svc}/
+                            docker push ${DOCKER_HUB_USER}/${imageRepo}:${tag}
+
+                            # Vẫn push thêm bản tag latest để dự phòng
+                            docker tag ${DOCKER_HUB_USER}/${imageRepo}:${tag} \
+                                      ${DOCKER_HUB_USER}/${imageRepo}:latest
+                            docker push ${DOCKER_HUB_USER}/${imageRepo}:latest
+                        """
+                        echo "✅ ${imageRepo}:${tag} + latest pushed"
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 5: Patch Helm values.yaml
+        // ────────────────────────────────────────────────────────
+        // Đổi: ghcr.io → docker.io/nashtechgarage
+        // Đổi: tag: bất kỳ → <release_tag> (VD: v1.2.3)
+        // ────────────────────────────────────────────────────────
+        stage('Patch Helm values.yaml') {
+            steps {
+                script {
+                    def allServices = [
+                        'cart','customer','inventory','location','media',
+                        'order','payment','payment-paypal','product',
+                        'promotion','rating','recommendation','sampledata',
+                        'search','tax','webhook',
+                        'storefront-ui','storefront-bff',
+                        'backoffice-ui','backoffice-bff',
+                    ]
+
+                    allServices.each { svc ->
+                        def valuesFile = "k8s/charts/${svc}/values.yaml"
+                        def imageRepo  = "yas-${svc}"
+                        if (svc == 'storefront-ui')  { imageRepo = 'yas-storefront' }
+                        if (svc == 'backoffice-ui')  { imageRepo = 'yas-backoffice' }
+
+                        sh """
+                            sed -i 's|ghcr.io/nashtech-garage/yas-${svc}|docker.io/${DOCKER_HUB_USER}/${imageRepo}|g' \
+                                ${valuesFile}
+                            # Đổi tag từ bất kỳ thứ gì thành release tag (VD: v1.2.3)
+                            sed -i 's|tag: .*|tag: ${env.RELEASE_TAG}|g' ${valuesFile}
+                        """
+                        echo "✅ ${svc} values.yaml patched → tag: ${env.RELEASE_TAG}"
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 6: Verify patched values
+        // ────────────────────────────────────────────────────────
+        stage('Verify patched values') {
+            steps {
+                script {
+                    def sampleTag = sh(
+                        script: "grep -E '^\\s*tag:' k8s/charts/cart/values.yaml | head -1 | awk '{print \\$2}'",
+                        returnStdout: true
+                    ).trim()
+                    echo "Sample cart image tag: ${sampleTag}"
+                    if (sampleTag != env.RELEASE_TAG) {
+                        error("❌ values.yaml patch failed. Expected tag:${env.RELEASE_TAG}, got: ${sampleTag}")
+                    }
+                    echo "✅ values.yaml patch verified"
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 7: Commit & Push to Git (PULL MODEL)
+        // ────────────────────────────────────────────────────────
+        // [skip ci] ngăn CI job chạy lại từ commit này
+        // → ArgoCD thấy tag v1.2.3 match "v*.*.*" → sync staging
+        // → staging_cd KHÔNG tự trigger lại
+        // ────────────────────────────────────────────────────────
+        stage('Commit & Push to Git') {
+            steps {
+                script {
+                    sh '''
+                        git config --global user.email  'jenkins@yas.local'
+                        git config --global user.name   'YAS CI/CD — Staging CD'
+                    '''
+
+                    def hasChanges = sh(
+                        script: "git diff --stat | grep -q 'values.yaml' && echo 'yes' || echo 'no'",
+                        returnStdout: true
+                    ).trim()
+
+                    if (hasChanges == 'yes') {
+                        sh '''
+                            git add k8s/charts/*/values.yaml
+                            git status --short k8s/charts/
+                        '''
+
+                        def releaseTag = env.RELEASE_TAG
+                        def commitMsg = """[CD/staging] Release ${releaseTag} — Docker Hub image update
+
+Release tag : ${releaseTag}
+Action      : Build & push all service images to Docker Hub (tag: ${releaseTag})
+Changes     : Patched image refs (ghcr.io → docker.io) + tag=${releaseTag}
+
+[skip ci]
+
+Co-authored-by: YAS CI/CD Staging CD <jenkins@yas.local>"""
+
+                        sh """
+                            git commit -m "${commitMsg.replaceAll('"', '\\\\"').replaceAll('\n', '\\n')}"
+                            git push origin refs/heads/${GIT_BRANCH}
+                        """
+                        echo "✅ Committed and pushed to origin/${GIT_BRANCH}"
+                        echo "   ArgoCD will detect tag ${releaseTag} → sync staging namespace"
+                    } else {
+                        echo "⏭  No values.yaml changes detected — skipping commit"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+╔══════════════════════════════════════════════════════════════════╗
+║  ✅ STAGING_CD COMPLETED                                  ║
+║                                                           ║
+║  Release tag : ${env.RELEASE_TAG.padRight(40)}║
+║  Images pushed to Docker Hub (tag: ${env.RELEASE_TAG})        ║
+║  ArgoCD staging sync triggered (tag match: v*.*.*)         ║
+║                                                           ║
+║  To monitor ArgoCD sync:                                   ║
+║    argocd app get yas-staging-all-services               ║
+║    argocd app sync yas-staging-all-services               ║
+╚══════════════════════════════════════════════════════════════════╝
+"""
+        }
+        failure {
+            echo "❌ STAGING_CD FAILED — check logs above"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

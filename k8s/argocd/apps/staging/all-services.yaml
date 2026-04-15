@@ -1,0 +1,54 @@
+# ============================================================
+# ArgoCD Child App — STAGING Environment
+# Trigger: CHỈ khi có Git Release Tag dạng v*.*.*
+# ArgoCD KHÔNG sync với các commit thường trên main.
+# Khi Jenkins staging_cd job push git tag v1.2.3 → ArgoCD
+# phát hiện tag → sync một lần duy nhất vào staging namespace.
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: yas-staging-all-services
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: staging
+    app.kubernetes.io/part-of: yas
+spec:
+  project: default
+
+  source:
+    repoURL:        https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git
+    targetRevision: "v*.*.*"            # ← Chỉ match git tags: v1.2.3, v2.0.0-rc1, ...
+    path:           k8s/charts
+
+    helm:
+      valueFiles:
+        - values.yaml
+      # staging_cd job set image.tag = git tag (VD: v1.2.3)
+      # ArgoCD dùng đúng tag đó để render Helm manifests
+      parameters:
+        - name: backend.image.tag
+          value: latest   # ← Jenkins CI override = GIT_TAG_NAME (v1.2.3)
+        - name: image.tag
+          value: latest
+
+  destination:
+    server:    https://kubernetes.default.svc
+    namespace: staging
+
+  # Không auto-prune hoặc self-heal trên staging
+  # — staging cần kiểm soát thủ công, không tự động xóa
+  syncPolicy:
+    automated:
+      prune:    false   # Không tự xóa resources trên staging
+      selfHeal: false   # Không tự heal trên staging
+      allowEmpty: true
+    retry:
+      limit: 3
+    ignoreDifferences:
+      - group: apps
+        kind: Deployment
+        jsonPointers:
+          - /spec/replicas

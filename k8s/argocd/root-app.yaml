@@ -1,0 +1,38 @@
+# ============================================================
+# ArgoCD Root Application — App-of-Apps Pattern
+# Quản lý tất cả child Applications (dev, staging).
+# ArgoCD sẽ tự động tìm và render manifests trong path apps/
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: yas-root
+  namespace: argocd
+  finalizers:
+    # Đảm bảo xóa child resources khi root app bị xóa
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  # Git repo nơi ArgoCD tìm manifests
+  source:
+    repoURL:            https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git
+    targetRevision:     main
+    path:               k8s/argocd/apps  # Chỉ theo dõi thư mục apps/
+
+  # Root app sống trong namespace argocd, quản lý resources cùng namespace
+  destination:
+    server:    https://kubernetes.default.svc
+    namespace: argocd
+
+  # Tự động sync khi Git thay đổi
+  syncPolicy:
+    automated:
+      prune:    true   # Xóa resources không còn trong Git
+      selfHeal: true   # Tự heal khi cluster drift khỏi Git
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

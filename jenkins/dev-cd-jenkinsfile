@@ -1,0 +1,226 @@
+// ================================================================
+// dev_cd Jenkinsfile
+// ────────────────────────────────────────────────────────────────
+// GitOps PULL MODEL — CHỈ commit Git, KHÔNG helm/kubectl
+//
+// Trigger  : Khi main branch thay đổi (CI job push values.yaml)
+//
+// Luồng hoàn chỉnh:
+//   1. CI job push values.yaml (ko [skip ci]) → ArgoCD sync dev ✅
+//   2. Dev_cd thấy main thay đổi
+//   3. Dev_cd build & push ALL images (tag: <commit_sha>)
+//   4. Dev_cd commit values.yaml (CÓ [skip ci])
+//      → ArgoCD thấy commit mới → sync dev ✅
+//      → Dev_cd KHÔNG tự trigger lại (vì [skip ci])
+//
+// Mô hình: ArgoCD là "Single Source of Truth" cho cluster.
+// Jenkins chỉ cập nhật Git → ArgoCD tự động sync.
+// ================================================================
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB_USER = 'nashtechgarage'
+        GIT_REPO        = 'https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git'
+        GIT_BRANCH      = 'main'
+        // Git credential ID đã được cấu hình trong Jenkins Credentials
+        GIT_CREDENTIALS = 'github-read-write'
+    }
+
+    stages {
+
+        // ────────────────────────────────────────────────────────
+        // Stage 1: Checkout main branch
+        // ────────────────────────────────────────────────────────
+        stage('Checkout main branch') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "*/${GIT_BRANCH}"]],
+                    extensions: [
+                        [$class: 'WipeWorkspace'],
+                        [$class: 'CloneOption', depth: 1]
+                    ],
+                    userRemoteConfigs: [[
+                        url: "${GIT_REPO}",
+                        credentialsId: "${GIT_CREDENTIALS}"
+                    ]]
+                ])
+                echo "✅ Checked out ${GIT_BRANCH} branch"
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 2: Build & Push Docker Images (Commit ID Tag)
+        // ────────────────────────────────────────────────────────
+        // Mỗi commit → image tag = 7 ký tự đầu của commit SHA
+        // VD: commit abc1234 → tag: abc1234
+        // Đảm bảo image uniquely traceable về đúng commit
+        // ────────────────────────────────────────────────────────
+        stage('Build & Push Docker Images') {
+            steps {
+                script {
+                    env.COMMIT_SHORT_SHA = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    echo "📦 Commit SHA (7 chars): ${env.COMMIT_SHORT_SHA}"
+
+                    def javaServices = [
+                        'cart','customer','inventory','location','media',
+                        'order','payment','payment-paypal','product',
+                        'promotion','rating','recommendation','sampledata',
+                        'search','tax','webhook',
+                        'storefront-bff','backoffice-bff'
+                    ]
+                    def nodeServices = ['storefront', 'backoffice']
+
+                    (javaServices + nodeServices).each { svc ->
+                        def imageRepo = "yas-${svc}"
+                        echo "─── Building ${imageRepo}:${env.COMMIT_SHORT_SHA} ───"
+
+                        sh """
+                            docker build -t ${DOCKER_HUB_USER}/${imageRepo}:${env.COMMIT_SHORT_SHA} ${svc}/
+                            docker push ${DOCKER_HUB_USER}/${imageRepo}:${env.COMMIT_SHORT_SHA}
+
+                            # Vẫn push thêm bản tag latest để dự phòng
+                            docker tag ${DOCKER_HUB_USER}/${imageRepo}:${env.COMMIT_SHORT_SHA} \
+                                      ${DOCKER_HUB_USER}/${imageRepo}:latest
+                            docker push ${DOCKER_HUB_USER}/${imageRepo}:latest
+                        """
+                        echo "✅ ${imageRepo}:${env.COMMIT_SHORT_SHA} + latest pushed"
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 3: Patch Helm values.yaml
+        // ────────────────────────────────────────────────────────
+        // Đổi: ghcr.io → docker.io/nashtechgarage
+        // Đổi: tag: bất kỳ → <commit_sha>
+        // ────────────────────────────────────────────────────────
+        stage('Patch Helm values.yaml') {
+            steps {
+                script {
+                    def allServices = [
+                        'cart','customer','inventory','location','media',
+                        'order','payment','payment-paypal','product',
+                        'promotion','rating','recommendation','sampledata',
+                        'search','tax','webhook',
+                        'storefront-ui','storefront-bff',
+                        'backoffice-ui','backoffice-bff',
+                    ]
+
+                    allServices.each { svc ->
+                        def valuesFile = "k8s/charts/${svc}/values.yaml"
+                        def imageRepo  = "yas-${svc}"
+                        if (svc == 'storefront-ui')  { imageRepo = 'yas-storefront'   }
+                        if (svc == 'backoffice-ui')  { imageRepo = 'yas-backoffice'   }
+
+                        sh """
+                            sed -i 's|ghcr.io/nashtech-garage/yas-${svc}|docker.io/${DOCKER_HUB_USER}/${imageRepo}|g' \
+                                ${valuesFile}
+                            # Đổi tag từ bất kỳ thứ gì thành commit SHA hiện tại
+                            sed -i 's|tag: .*|tag: ${env.COMMIT_SHORT_SHA}|g' ${valuesFile}
+                        """
+                        echo "✅ ${svc} values.yaml patched → tag: ${env.COMMIT_SHORT_SHA}"
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 4: Verify patched values
+        // ────────────────────────────────────────────────────────
+        stage('Verify patched values') {
+            steps {
+                script {
+                    def sampleTag = sh(
+                        script: "grep -E '^\\s*tag:' k8s/charts/cart/values.yaml | head -1 | awk '{print \\$2}'",
+                        returnStdout: true
+                    ).trim()
+                    echo "Sample cart image tag: ${sampleTag}"
+                    if (sampleTag != env.COMMIT_SHORT_SHA) {
+                        error("❌ values.yaml patch failed. Expected tag:${env.COMMIT_SHORT_SHA}, got: ${sampleTag}")
+                    }
+                    echo "✅ values.yaml patch verified"
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────
+        // Stage 5: Commit & Push to Git (PULL MODEL)
+        // ────────────────────────────────────────────────────────
+        // [skip ci] trong commit message ngăn CI job chạy lại
+        // → ArgoCD thấy commit mới → auto-sync dev namespace
+        // → Dev_cd KHÔNG tự trigger lại
+        // ────────────────────────────────────────────────────────
+        stage('Commit & Push to Git') {
+            steps {
+                script {
+                    sh '''
+                        git config --global user.email  'jenkins@yas.local'
+                        git config --global user.name   'YAS CI/CD — Dev CD'
+                    '''
+
+                    def hasChanges = sh(
+                        script: "git diff --stat | grep -q 'values.yaml' && echo 'yes' || echo 'no'",
+                        returnStdout: true
+                    ).trim()
+
+                    if (hasChanges == 'yes') {
+                        sh '''
+                            git add k8s/charts/*/values.yaml
+                            git status --short k8s/charts/
+                        '''
+
+                        def commitMsg = """[CD/dev] Update Docker Hub image refs to ${env.COMMIT_SHORT_SHA}
+
+Triggered by : ArgoCD Dev Sync Pipeline
+Action       : Build & push all service images to Docker Hub (tag: ${env.COMMIT_SHORT_SHA})
+Changes      : Patched image repositories (ghcr.io → docker.io/nashtechgarage)
+Commit SHA   : ${env.COMMIT_SHORT_SHA}
+
+[skip ci]
+
+Co-authored-by: YAS CI/CD Dev CD <jenkins@yas.local>"""
+
+                        sh """
+                            git commit -m "${commitMsg.replaceAll('"', '\\\\"').replaceAll('\n', '\\n')}"
+                            git push origin ${GIT_BRANCH}
+                        """
+                        echo "✅ Committed and pushed to origin/${GIT_BRANCH}"
+                    } else {
+                        echo "⏭  No values.yaml changes detected — skipping commit"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+╔══════════════════════════════════════════════════════════════════╗
+║  ✅ DEV_CD COMPLETED                                        ║
+║                                                           ║
+║  Commit SHA  : ${env.COMMIT_SHORT_SHA}                                 ║
+║  All images pushed to Docker Hub (tag: ${env.COMMIT_SHORT_SHA})        ║
+║  ArgoCD sync triggered automatically                        ║
+║  (dev namespace updated by ArgoCD, not Jenkins)             ║
+║                                                           ║
+║  To monitor ArgoCD sync:                                   ║
+║    argocd app get yas-dev-all-services                   ║
+║    argocd app sync yas-dev-all-services                   ║
+╚══════════════════════════════════════════════════════════════════╝
+"""
+        }
+        failure {
+            echo "❌ DEV_CD FAILED — check logs above"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

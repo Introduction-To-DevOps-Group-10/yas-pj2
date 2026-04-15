@@ -1,24 +1,77 @@
-# Title for the gitleaks configuration file.
-title = "Gitleaks title"
+# ============================================================
+# Gitleaks Configuration — YAS Project
+# Gitleaks kiểm tra secrets trong repository.
+# Các file trong allowlist sẽ bị BỎ QUA (không báo lỗi).
+# ============================================================
+title = "YAS Project — Gitleaks Allowlist"
 
-# Extend the base (this) configuration. When you extend a configuration
-# the base rules take precedence over the extended rules. I.e., if there are
-# duplicate rules in both the base configuration and the extended configuration
-# the base rules will override the extended rules.
-# Another thing to know with extending configurations is you can chain together
-# multiple configuration files to a depth of 2. Allowlist arrays are appended
-# and can contain duplicates.
-# useDefault and path can NOT be used at the same time. Choose one.
-[extend]
-# useDefault will extend the base configuration with the default gitleaks config:
+# Kế thừa tất cả rules mặc định của gitleaks
 # https://github.com/zricethezav/gitleaks/blob/master/config/gitleaks.toml
+[extend]
 useDefault = true
 
+# ============================================================
+# ALLOWLIST — Files & Secrets bỏ qua kiểm tra
+# ============================================================
 [allowlist]
-description = "global allow list"
+description = """
+YAS Development Secrets Allowlist
+
+LÝ DO CHO PHÉP:
+- application.properties (src/main/resources): chứa keycloak credentials
+  dùng trong MÔI TRƯỜNG PHÁT TRIỂN CỤC BỘ (localhost).
+  KHÔNG bao gồm production credentials thật.
+- application.properties (src/it/resources): integration test file,
+  không bao giờ chạy trong môi trường production.
+- test-realm.json: Keycloak test realm cho unit/integration tests.
+- realm-export.json: Keycloak realm export — dùng trong docker-compose dev.
+- keycloak-yas-realm-import.yaml: Helm chart Keycloak import template.
+- changelog-*.sql: chứa test PayPal client credentials (sandbox/fake).
+- cluster-config.yaml: chứa Elasticsearch dev password cho local cluster.
+  Thay thế bằng Kubernetes Secret trong CI/CD.
+- yas-configuration/values.yaml: chứa client secrets cho Keycloak clients.
+  Dùng trong dev environment. Thay thế bằng external secrets manager.
+"""
+
+# ─── File paths bỏ qua hoàn toàn ────────────────────────
 paths = [
+  # Keycloak realm files (dùng trong dev)
   '''test-realm.json''',
   '''realm-export''',
   '''keycloak-yas-realm-import.yaml''',
-  '''target'''
+
+  # Maven/Jenkins build output
+  '''target/''',
+
+  # Source code test files chứa test credentials
+  '''application.properties''',           # Keycloak dev credentials
+  '''test-realm''',                     # Realm JSON files
+  '''realm-export''',                   # Keycloak export
+  '''changelog''',                      # DB changelog SQL (PayPal sandbox)
+  '''yas-configuration/values.yaml''',  # Dev client secrets trong Helm values
+  '''cluster-config.yaml''',            # Dev Elasticsearch password
+]
+
+# ─── Specific secrets bỏ qua (regex) ────────────────────
+# Các secrets dưới đây là CỦA MÔI TRƯỜNG DEV / SANDBOX
+# KHÔNG phải production credentials thật
+regexes = [
+  # Keycloak client secrets — dev environment
+  '''NKAr3rnjwm9jlakgKpelukZGFaHYqIWE''',
+  '''TVacLC0cQ8tiiEKiTVerTb2YvwQ1TRJF''',
+  '''ZrU9I0q2uXBglBnmvyJdkl1lf0ncr8tn''',
+
+  # Elasticsearch dev password
+  '''LarUmB3A49NTg9YmgW4=''',
+
+  # Test UUID secrets trong test-realm.json
+  '''46c49daf-fa62-4744-883d-d32e810cfb9c''',
+  '''590e533b-5a2d-4dd1-9419-d301f326cf0a''',
+  '''134ac396-96f5-432a-8241-faf3de2711f6''',
+  '''8caf9d87-7e94-4597-931a-4cb5357e72b2''',
+  '''70fd3aa0-f353-4860-9a67-5eb86684e0a8''',
+  '''55fbb9e1-4410-48b7-b1ad-7b043144b859''',
+
+  # PayPal sandbox credentials (test-only)
+  '''ENX1js2V-5bdTe86voCAcyrT6bcRtVzRcvNsdo0XDhDYT_5KEBmlYT7oOBWVVwjPsS4i6bktL1R8eL3j''',
 ]

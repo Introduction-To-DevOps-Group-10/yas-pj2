@@ -1,0 +1,65 @@
+# ============================================================
+# Istio AuthorizationPolicy — Cart Service
+# Principle of Least Privilege: DENY-by-default, ALLOW-by-exception.
+# Chỉ storefront-bff (frontend BFF) được gọi cart.
+# Tất cả service khác bị DENY.
+# ============================================================
+---
+# Bước 1: DENY ALL — từ chối mọi request vào cart
+# Istio evaluate DENY rules TRƯỚC ALLOW rules
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: cart-deny-all
+  namespace: dev          # Mirror: tạo bản sao cho staging & developer
+  labels:
+    app.kubernetes.io/name: cart
+    app.kubernetes.io/component: authorization
+spec:
+  action: DENY
+  # Áp dụng chỉ cho pods có label app=cart
+  selector:
+    matchLabels:
+      app: cart
+  # Empty rules = match all = deny all requests
+  rules:
+    - {}
+
+---
+# Bước 2: ALLOW — chỉ storefront-bff được phép gọi cart
+# SPIFFE ID format: spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>
+# ServiceAccount của storefront-bff được tạo bởi backend Helm chart
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: cart-allow-storefront-bff
+  namespace: dev
+  labels:
+    app.kubernetes.io/name: cart
+    app.kubernetes.io/component: authorization
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      app: cart
+  rules:
+    - from:
+        - source:
+            # SPIFFE identity của storefront-bff pod
+            # Xác minh bằng: kubectl get pod -n dev -l app=storefront-bff \
+            #                   -o jsonpath='{.spec.serviceAccountName}'
+            principals:
+              - "cluster.local/ns/dev/sa/storefront-bff"
+      to:
+        - operation:
+            # Giới hạn path chỉ API endpoints, không cho phép /actuator
+            paths:
+              - /api/cart/*
+              - /ws/cart
+            # HTTP methods BFF → cart
+            methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - PATCH

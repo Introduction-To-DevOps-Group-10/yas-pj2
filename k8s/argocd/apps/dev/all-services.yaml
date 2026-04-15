@@ -1,0 +1,55 @@
+# ============================================================
+# ArgoCD Child App — DEV Environment
+# Trigger: Mỗi commit mới trên branch main
+# (dev_cd Jenkins job cập nhật image tag = 'latest' rồi push Git)
+# ArgoCD phát hiện commit mới → auto-sync dev namespace
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: yas-dev-all-services
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: dev
+    app.kubernetes.io/part-of: yas
+spec:
+  project: default
+
+  source:
+    repoURL:        https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git
+    targetRevision: main                              # ← Theo dõi branch main
+    path:           k8s/charts                         # ← Helm charts gốc
+
+    helm:
+      valueFiles:
+        - values.yaml
+      # Dev CI job push image với tag = 'latest' lên Docker Hub
+      # ArgoCD override image.tag tại thời điểm render Helm
+      parameters:
+        - name: backend.image.tag
+          value: latest
+        - name: image.tag
+          value: latest
+        # Đổi image repository từ ghcr.io → docker.io/nashtechgarage
+        - name: backend.image.repository
+          value: docker.io/nashtechgarage/yas-dev-placeholder
+          # Thực tế sed trong CI job sẽ đổi trực tiếp trong values.yaml
+
+  destination:
+    server:    https://kubernetes.default.svc
+    namespace: dev
+
+  syncPolicy:
+    automated:
+      prune:    true
+      selfHeal: true
+      allowEmpty: true
+    retry:
+      limit: 5
+    ignoreDifferences:
+      - group: apps
+        kind: Deployment
+        jsonPointers:
+          - /spec/replicas   # HPA thay đổi replicas → bỏ qua diff

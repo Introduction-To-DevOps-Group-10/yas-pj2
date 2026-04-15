@@ -1,0 +1,112 @@
+// ================================================================
+// developer_delete Jenkinsfile
+// Mục 5: Xóa toàn bộ deployment trong namespace 'developer'
+// Chạy tay khi developer đã test xong và muốn dọn tài nguyên.
+// ================================================================
+pipeline {
+    agent any
+
+    environment {
+        NAMESPACE   = 'developer'
+        K8S_CLUSTER = 'https://<K8S-MASTER-IP>:6443'
+    }
+
+    stages {
+
+        stage('Check current state') {
+            steps {
+                script {
+                    def podCount = sh(
+                        script: "kubectl get pods -n ${NAMESPACE} --no-headers 2>/dev/null | wc -l",
+                        returnStdout: true
+                    ).trim()
+                    def releaseCount = sh(
+                        script: "helm list -n ${NAMESPACE} -q 2>/dev/null | wc -l",
+                        returnStdout: true
+                    ).trim()
+
+                    echo "── Namespace '${NAMESPACE}' current state ──"
+                    echo "  Pods:     ${podCount}"
+                    echo "  Releases: ${releaseCount}"
+
+                    if (podCount == '0' && releaseCount == '0') {
+                        echo "⚠️  Namespace đã trống — không có gì để xóa."
+                    }
+                }
+            }
+        }
+
+        stage('Delete all Helm releases') {
+            steps {
+                sh '''
+                    echo "── Uninstalling all Helm releases in ${NAMESPACE} ──"
+                    helm list -n ${NAMESPACE} -q | while read release; do
+                        echo "  Deleting release: ${release}"
+                        helm uninstall ${release} -n ${NAMESPACE} --wait || true
+                    done
+                    echo "✅ Helm releases uninstalled"
+                '''
+            }
+        }
+
+        stage('Delete all Kubernetes resources') {
+            steps {
+                sh '''
+                    echo "── Deleting all resources in ${NAMESPACE} ──"
+                    # Xóa everything trừ namespace itself
+                    kubectl delete all --all -n ${NAMESPACE} --ignore-not-found=true
+                    kubectl delete configmap --all -n ${NAMESPACE} --ignore-not-found=true
+                    kubectl delete secret --all -n ${NAMESPACE} --ignore-not-found=true
+                    kubectl delete pvc --all -n ${NAMESPACE} --ignore-not-found=true
+                    echo "✅ All resources deleted"
+                '''
+            }
+        }
+
+        stage('Delete developer namespace') {
+            steps {
+                sh '''
+                    kubectl delete namespace ${NAMESPACE} --ignore-not-found=true
+                    echo "✅ Namespace ${NAMESPACE} deleted"
+                '''
+            }
+        }
+
+        stage('Verify deletion') {
+            steps {
+                script {
+                    def nsExists = sh(
+                        script: "kubectl get namespace ${NAMESPACE} 2>&1 | grep -q 'NotFound' && echo 'deleted' || echo 'exists'",
+                        returnStdout: true
+                    ).trim()
+
+                    if (nsExists == 'deleted') {
+                        echo "✅ Namespace '${NAMESPACE}' confirmed DELETED"
+                    } else {
+                        echo "⚠️  Namespace '${NAMESPACE}' still exists — check manually"
+                        sh "kubectl get namespace ${NAMESPACE}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+╔═══════════════════════════════════════════════════════════╗
+║  ✅ DEVELOPER NAMESPACE CLEANED UP                       ║
+║                                                           ║
+║  Namespace 'developer' đã được xóa hoàn toàn.            ║
+║  Tất cả Helm releases, pods, services đã được dọn.       ║
+╚═══════════════════════════════════════════════════════════╝
+"""
+        }
+        failure {
+            echo "❌ Cleanup failed — check logs above"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

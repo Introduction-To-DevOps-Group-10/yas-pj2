@@ -1,0 +1,9 @@
+# ============================================================
+# ArgoCD App — STAGING Kustomization
+# Staging app watches Git Release Tags (v*.*.*).
+# ============================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - all-services.yaml

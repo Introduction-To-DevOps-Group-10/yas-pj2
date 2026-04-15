@@ -1,0 +1,41 @@
+# ============================================================
+# Istio STRICT mTLS Policy
+# Áp dụng cho: dev, staging, developer namespaces
+# Tất cả traffic giữa các microservices phải là mTLS-encrypted.
+# Plain-text HTTP bị REJECT hoàn toàn.
+# ============================================================
+---
+# PeerAuthentication: cấu hình mTLS ở mức namespace
+# Istiod tự động cấp x509 certificate cho mỗi pod qua SDS.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: yas-strict-mtls
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/name: yas
+    app.kubernetes.io/component: security
+spec:
+  # STRICT = mọi traffic phải có mTLS, không cho phép plain-text
+  mtlsMode: STRICT
+  targetNamespaces:
+    - dev
+    - staging
+    - developer
+
+---
+# DestinationRule: báo cho Envoy proxy cách dùng mTLS khi gọi service
+# ISTIO_MUTUAL = Istio tự quản lý certificate (không cần import thủ công)
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: yas-mtls-destination-rule
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/name: yas
+    app.kubernetes.io/component: security
+spec:
+  host: "*.svc.cluster.local"
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

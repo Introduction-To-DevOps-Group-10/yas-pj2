@@ -1,0 +1,54 @@
+# ============================================================
+# Istio VirtualService — Cart Retry Policy
+# Tự động retry 3 lần khi cart service trả HTTP 5xx.
+# Tất cả caller gọi cart đều thừa hưởng policy này tự động
+# vì VirtualService HTTPRoute gắn với destination service.
+# ============================================================
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: cart-retry-virtualservice
+  namespace: dev          # Mirror: tạo bản sao cho staging & developer
+  labels:
+    app.kubernetes.io/name: cart
+    app.kubernetes.io/component: traffic-management
+spec:
+  # hosts: phải khớp với Kubernetes Service FQDN của cart
+  hosts:
+    - cart
+    - cart.dev.svc.cluster.local    # FQDN cho cross-namespace calls
+  http:
+    # ─── Rule 1: Retry cho /api/cart/* API paths ───
+    - match:
+        - headers:
+            :path:
+              prefix: /api/cart
+      route:
+        - destination:
+            host: cart
+            port:
+              number: 80    # Named port 'http' từ k8s Service
+      retries:
+        # Số lần retry thêm sau khi response lỗi
+        attempts: 3
+        # Timeout cho mỗi lần retry
+        perTryTimeout: 3s
+        # Chỉ retry khi response có:
+        retryOn: |
+          5xx,             # Server error: 500, 502, 503, 504
+          reset,            # Connection reset mid-stream
+          gateway-error,     # 502/503/504
+          connect-failure   # Không kết nối được đến cart
+
+    # ─── Rule 2: Health check — KHÔNG retry ───
+    # Retry health check có thể che giấu downtime thực sự
+    - match:
+        - headers:
+            :path:
+              exact: /actuator/health/readiness
+      route:
+        - destination:
+            host: cart
+            port:
+              number: 80
+      retries: {}           # Empty = no retry, fail immediately

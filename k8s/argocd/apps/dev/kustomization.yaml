@@ -1,0 +1,9 @@
+# ============================================================
+# ArgoCD App — DEV Kustomization
+# Dev app watches the main branch.
+# ============================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - all-services.yaml
