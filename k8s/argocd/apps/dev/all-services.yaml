@@ -20,7 +20,7 @@ spec:
   source:
     repoURL:        https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git
     targetRevision: main                              # ← Theo dõi branch main
-    path:           k8s/charts                         # ← Helm charts gốc
+    path:           k8s/charts/yas-configuration                         # ← Helm charts gốc
 
     helm:
       valueFiles:
