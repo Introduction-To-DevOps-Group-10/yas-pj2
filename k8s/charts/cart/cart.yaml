@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: yas-dev-cart
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git'
+    targetRevision: main
+    # Trỏ đúng vào thư mục chứa Helm chart của cart
+    path: k8s/charts/cart
+    helm:
+      # Override image tag mới nhất từ Jenkins đẩy lên
+      parameters:
+        - name: image.tag
+          value: latest
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
