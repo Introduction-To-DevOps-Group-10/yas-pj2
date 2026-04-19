@@ -48,8 +48,9 @@ spec:
       allowEmpty: true
     retry:
       limit: 5
-    ignoreDifferences:
-      - group: apps
-        kind: Deployment
-        jsonPointers:
-          - /spec/replicas   # HPA thay đổi replicas → bỏ qua diff
+      
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas   # HPA thay đổi replicas → bỏ qua diff
