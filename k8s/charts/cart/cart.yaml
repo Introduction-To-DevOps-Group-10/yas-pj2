@@ -4,6 +4,7 @@ metadata:
   name: yas-dev-cart
   namespace: argocd
 spec:
+  replicas: 3
   project: default
   source:
     repoURL: 'https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git'
