@@ -10,7 +10,7 @@
 
 1. [Tổng quan kiến trúc](#1-tổng-quan-kiến-trúc)
 2. [Repository structure — Cấu trúc thư mục mới](#2-repository-structure--cấu-trúc-thư-mục-mới)
-3. [ArgoCD — GitOps](#3-argocd--gitops)
+3. [ArgoCD — GitOps](#3-argocd--gitops)source bin/activate
    - 3.1. Namespaces (`k8s/argocd/namespaces.yaml`)
    - 3.2. Root Application (`k8s/argocd/root-app.yaml`)
    - 3.3. Dev Child App (`k8s/argocd/apps/dev/all-services.yaml`)
