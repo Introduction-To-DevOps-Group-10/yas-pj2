@@ -21,7 +21,7 @@ spec:
   source:
     repoURL:        https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git
     targetRevision: "v*.*.*"            # ← Chỉ match git tags: v1.2.3, v2.0.0-rc1, ...
-    path:           k8s/charts
+    path:           k8s/charts/yas-configuration                         # ← Helm charts gốc
 
     helm:
       valueFiles:
@@ -47,7 +47,7 @@ spec:
       allowEmpty: true
     retry:
       limit: 3
-      
+
   ignoreDifferences:
     - group: apps
       kind: Deployment
