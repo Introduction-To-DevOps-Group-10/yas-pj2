@@ -18,7 +18,7 @@ spec:
         - name: serviceMonitor
           value: "false"
         - name: backend.databaseConnectionUrl
-          value: "jdbc:postgresql://postgresql.dev.svc.cluster.local:5432"
+          value: "jdbc:postgresql://postgresql.postgres:5432"
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: dev
