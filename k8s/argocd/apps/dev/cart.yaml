@@ -17,6 +17,8 @@ spec:
           value: latest
         - name: serviceMonitor
           value: "false"
+        - name: backend.databaseConnectionUrl
+          value: "jdbc:postgresql://postgresql.dev.svc.cluster.local:5432/cart"
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: dev
