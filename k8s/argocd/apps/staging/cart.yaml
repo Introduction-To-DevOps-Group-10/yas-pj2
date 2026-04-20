@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: yas-staging-cart    # Đổi tên để không bị trùng
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/Introduction-To-DevOps-Group-10/yas-pj2.git'
+    # ĐIỂM KHÁC BIỆT: Theo dõi tag thay vì branch main
+    targetRevision: 'v*'     # Tự động bắt các tag bắt đầu bằng chữ v
+    path: k8s/charts/cart
+    helm:
+      parameters:
+        - name: image.tag
+          value: latest      # Sau này Jenkins sẽ đổi cái này thành tag cụ thể (vd: v1.0.1)
+        - name: serviceMonitor
+          value: "false"     # Nhớ tắt cái này nếu chưa cài Prometheus
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: staging       # Đẩy vào nhà kho staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

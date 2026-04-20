@@ -15,7 +15,7 @@ spec:
       parameters:
         - name: image.tag
           value: latest
-        - name: serviceMonitor.enabled
+        - name: serviceMonitor
           value: "false"
   destination:
     server: 'https://kubernetes.default.svc'

@@ -6,6 +6,9 @@ backend:
   nameOverride: cart
   fullnameOverride: cart
   databaseName: cart
+  # Tắt ServiceMonitor nếu chưa cài Prometheus Operator
+  serviceMonitor:
+    enabled: false
   ingress:
     enabled: false
   extraVolumes:
