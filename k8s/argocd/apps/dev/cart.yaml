@@ -15,7 +15,6 @@ spec:
       parameters:
         - name: image.tag
           value: latest
-
         - name: serviceMonitor.enabled
           value: "false"
   destination:
@@ -25,3 +24,6 @@ spec:
     automated:
       prune: true
       selfHeal: true
+  syncOptions:
+      - CreateNamespace=true
+      - Replace=true
